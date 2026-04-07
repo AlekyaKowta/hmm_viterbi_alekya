@@ -227,87 +227,111 @@ def formula_guess_b(y: float, x: float, n: int) -> float:
 # Main experiment grid
 # ============================================================
 
-def run_experiment(n: int = 3, num_trials: int = 1000, seq_length: int = 15, seed: int = 42):
+def run_experiment(n: int = 3, num_trials: int = 1000, seq_length: int = 50, seed: int = 42):
     rng = random.Random(seed)
     random.seed(seed)
 
-    # Sharpness levels to test
-    # sharpness=0.0 → rows very similar (cosine≈1)
-    # sharpness=1.0 → rows very different (cosine≈0)
-    sharpness_levels = [0.0, 0.3, 0.6, 0.9]
-
-    results = []
+    # 1. Expanded sharpness grid for better curve data
+    sharpness_levels = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    raw_data = []
 
     print(f"\n{'='*100}")
-    print(f"Running {n}x{n} HMM experiments: {len(sharpness_levels)**2} combinations × {num_trials} trials each")
+    print(f"Running {n}x{n} HMM experiments: {len(sharpness_levels)**2} combinations")
+    print("This might take a minute, but we only have to run Viterbi once per combo...")
     print(f"{'='*100}\n")
 
-    header = (f"{'Em.Sharp':>10} {'Tr.Sharp':>10} {'y(EmCos)':>10} {'x(TrCos)':>10} "
-              f"{'AA':>8} {'PA_orig':>8} {'PA_A':>8} {'PA_B':>8} "
-              f"{'Err_orig':>10} {'Err_A':>10} {'Err_B':>10}")
-    print(header)
-    print("-" * len(header))
-
+    # 2. Run Viterbi trials and collect baseline data FIRST
     for em_sharp in sharpness_levels:
         for tr_sharp in sharpness_levels:
             # Build matrices
             emission_matrix = blended_matrix(n, em_sharp, rng)
             transition_matrix = blended_matrix(n, tr_sharp, rng)
 
-            # Compute cosine similarities
-            y = mean_pairwise_cosine(emission_matrix)   # emission cosine
-            x = mean_pairwise_cosine(transition_matrix) # transition cosine
+            y = mean_pairwise_cosine(emission_matrix)
+            x = mean_pairwise_cosine(transition_matrix)
 
-            # Build HMM and run trials
+            # Build HMM and get actual accuracy
             hmm = build_hmm(n, emission_matrix, transition_matrix)
             aa = run_trials(hmm, num_trials=num_trials, seq_length=seq_length)
 
-            # Compute all three formula predictions
-            pa_orig = formula_original(y, n)
-            pa_a    = formula_guess_a(y, x, n, w=0.5)
-            pa_b    = formula_guess_b(y, x, n)
+            # Save the raw numbers so we can do math on them later
+            raw_data.append({
+                "em_sharp": em_sharp, "tr_sharp": tr_sharp,
+                "y": y, "x": x, "aa": aa
+            })
 
-            # Errors
-            err_orig = abs(pa_orig - aa)
-            err_a    = abs(pa_a - aa)
-            err_b    = abs(pa_b - aa)
+    # 3. Grid Search for the optimal 'w' (weight)
+    best_w = 0.5
+    best_avg_err = float('inf')
 
-            row = {
-                "em_sharpness": em_sharp,
-                "tr_sharpness": tr_sharp,
-                "y_emission_cosine": round(y, 4),
-                "x_transition_cosine": round(x, 4),
-                "actual_accuracy": round(aa, 4),
-                "pa_original": round(pa_orig, 4),
-                "pa_guess_a": round(pa_a, 4),
-                "pa_guess_b": round(pa_b, 4),
-                "error_original": round(err_orig, 4),
-                "error_guess_a": round(err_a, 4),
-                "error_guess_b": round(err_b, 4),
-            }
-            results.append(row)
+    # Test every w from 0.00 to 1.00 in steps of 0.01
+    for w_int in range(101):
+        w_test = w_int / 100.0
+        total_err = 0
+        for d in raw_data:
+            pa_a = formula_guess_a(d["y"], d["x"], n, w=w_test)
+            total_err += abs(pa_a - d["aa"])
+        
+        avg_err = total_err / len(raw_data)
+        if avg_err < best_avg_err:
+            best_avg_err = avg_err
+            best_w = w_test
 
-            print(
-                f"{em_sharp:>10.1f} {tr_sharp:>10.1f} {y:>10.4f} {x:>10.4f} "
-                f"{aa:>8.2%} {pa_orig:>8.2%} {pa_a:>8.2%} {pa_b:>8.2%} "
-                f"{err_orig:>10.2%} {err_a:>10.2%} {err_b:>10.2%}"
-            )
+    print(f"★ Grid Search Complete: Optimal 'w' found at {best_w:.2f} (Error: {best_avg_err:.2%}) ★\n")
 
-    # Summary
+    # 4. Generate final results using the newly found best_w
+    results = []
+    header = (f"{'Em.Sharp':>10} {'Tr.Sharp':>10} {'y(EmCos)':>10} {'x(TrCos)':>10} "
+              f"{'AA':>8} {'PA_orig':>8} {'PA_A(opt)':>9} {'PA_B':>8} "
+              f"{'Err_orig':>10} {'Err_A':>10} {'Err_B':>10}")
+    print(header)
+    print("-" * len(header))
+
+    for d in raw_data:
+        pa_orig = formula_original(d["y"], n)
+        pa_a    = formula_guess_a(d["y"], d["x"], n, w=best_w)  # Using optimal w!
+        pa_b    = formula_guess_b(d["y"], d["x"], n)
+
+        err_orig = abs(pa_orig - d["aa"])
+        err_a    = abs(pa_a - d["aa"])
+        err_b    = abs(pa_b - d["aa"])
+
+        results.append({
+            "em_sharpness": d["em_sharp"],
+            "tr_sharpness": d["tr_sharp"],
+            "y_emission_cosine": round(d["y"], 4),
+            "x_transition_cosine": round(d["x"], 4),
+            "actual_accuracy": round(d["aa"], 4),
+            "pa_original": round(pa_orig, 4),
+            "pa_guess_a_opt": round(pa_a, 4), 
+            "pa_guess_b": round(pa_b, 4),
+            "error_original": round(err_orig, 4),
+            "error_guess_a_opt": round(err_a, 4),
+            "error_guess_b": round(err_b, 4),
+            "optimal_w_used": best_w
+        })
+
+        print(
+            f"{d['em_sharp']:>10.1f} {d['tr_sharp']:>10.1f} {d['y']:>10.4f} {d['x']:>10.4f} "
+            f"{d['aa']:>8.2%} {pa_orig:>8.2%} {pa_a:>9.2%} {pa_b:>8.2%} "
+            f"{err_orig:>10.2%} {err_a:>10.2%} {err_b:>10.2%}"
+        )
+
+    # 5. Summary
     print(f"\n{'='*100}")
     print("SUMMARY")
     print(f"{'='*100}")
 
     avg_err_orig = sum(r["error_original"] for r in results) / len(results)
-    avg_err_a    = sum(r["error_guess_a"]  for r in results) / len(results)
-    avg_err_b    = sum(r["error_guess_b"]  for r in results) / len(results)
+    avg_err_a    = sum(r["error_guess_a_opt"] for r in results) / len(results)
+    avg_err_b    = sum(r["error_guess_b"] for r in results) / len(results)
 
     print(f"Average error — Original formula : {avg_err_orig:.2%}")
-    print(f"Average error — Guess A (weighted): {avg_err_a:.2%}")
+    print(f"Average error — Guess A (w={best_w:.2f}): {avg_err_a:.2%}")
     print(f"Average error — Guess B (product) : {avg_err_b:.2%}")
 
     best = min(
-        [("Original", avg_err_orig), ("Guess A", avg_err_a), ("Guess B", avg_err_b)],
+        [("Original", avg_err_orig), (f"Guess A (w={best_w:.2f})", avg_err_a), ("Guess B", avg_err_b)],
         key=lambda t: t[1]
     )
     print(f"\n✓ Best formula overall: {best[0]} with average error {best[1]:.2%}")
@@ -337,6 +361,6 @@ def save_csv(results: list, filename: str = "viterbi_results.csv"):
     print(f"\nResults saved to {full_path}")
 
 if __name__ == "__main__":
-    results = run_experiment(n=3, num_trials=1000, seq_length=15, seed=42)
+    results = run_experiment(n=3, num_trials=1000, seq_length=50, seed=42)
     save_csv(results)
     print("\nDone! Open viterbi_results.csv to see all numbers.")
