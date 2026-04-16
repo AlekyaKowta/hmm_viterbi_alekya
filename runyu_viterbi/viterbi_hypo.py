@@ -143,7 +143,7 @@ def formula_hypo1_1(emission_matrix, transition_matrix, n):
     sd = compute_stationary_distribution(transition_matrix)
     total = sum(cosine_similarity(emission_matrix[i], emission_matrix[j]) *
                 cosine_similarity(transition_matrix[i], transition_matrix[j]) *
-                sd[i] * sd[j] for i, j in pairs)
+                sd[i] for i, j in pairs) # Only source 
     return (1 - total / k) * ((n-1)/n) + (1/n)
 
 def formula_hypo2(emission_matrix, transition_matrix, n, w_e=0.8, w_t=0.2):
